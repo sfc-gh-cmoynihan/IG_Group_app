@@ -1,0 +1,44 @@
+version: 2
+
+name: IG_GROUP_INTELLIGENCE
+database: IG_GROUP_DB
+schema: STRUCTURED
+query_warehouse: IG_WH
+
+label: "IG Group Intelligence"
+description: "Client 360, risk & hedging, regulatory reporting, fraud/AML surveillance and AI assistant for IG Group on Snowflake."
+icon: public/icon.svg
+
+runtime: node
+
+install:
+  commands:
+    - ["npm", "ci", "--include=dev"]
+
+build:
+  commands:
+    - ["npm", "run", "build"]
+    # For standalone mode
+    - ["cp", "-r", ".next/static", ".next/standalone/.next/static"]
+    - ["cp", "-r", "public", ".next/standalone/public"]
+    # Avoid packaging extra node_modules since standalone includes its own
+    - ["rm", "-rf", "node_modules"]
+
+run:
+  command: ["node", ".next/standalone/server.js"]
+
+ignore:
+  - node_modules
+  - .env*
+  - __pycache__
+  - "*.pyc"
+  - .next
+  - .git
+  - snowflake.log
+  - output
+  - "*.tsbuildinfo"
+  - app.yml.builder
+  - sql
+  - slides
+  - architecture
+  - documents

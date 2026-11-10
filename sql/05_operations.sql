@@ -1,0 +1,48 @@
+-- 05_operations.sql — COO operations data (synthetic, deterministic)
+-- v1.0 2026-11-09
+-- Settlements are derived from HEDGE_TRADES (custodian = prime broker, exchange = hedge venue).
+-- Bank balances: client-money accounts tie to CLIENT_MONEY_RECON resource; house cash is synthetic.
+
+USE DATABASE IG_GROUP_DB;
+USE SCHEMA STRUCTURED;
+
+CREATE OR REPLACE TABLE OPS_SETTLEMENTS AS
+WITH as_of_d AS (SELECT MAX(TRADE_DATE) AS D FROM HEDGE_TRADES),
+base AS (
+  SELECT h.*, ABS(HASH(h.HEDGE_TRADE_ID)) % 1000 AS RND,
+         IFF(h.HEDGE_VENUE IN ('LMAX', 'Coinbase Prime'), 1, 2) AS lag_days
+  FROM HEDGE_TRADES h
+)
+SELECT
+  'ST' || HEDGE_TRADE_ID AS SETTLEMENT_ID,
+  HEDGE_TRADE_ID,
+  PRIME_BROKER AS CUSTODIAN,
+  HEDGE_VENUE AS EXCHANGE,
+  TRADE_DATE,
+  DATEADD(day, lag_days, TRADE_DATE) AS SETTLE_DATE,
+  -- variation margin / premium: signed, + = IG receives, - = IG pays
+  ROUND(HEDGED_NOTIONAL_GBP * ((RND % 41) - 20) / 2000 - HEDGE_COST_GBP, 2) AS NET_AMOUNT_GBP,
+  CASE
+    WHEN DATEADD(day, lag_days, TRADE_DATE) > (SELECT D FROM as_of_d) THEN 'PENDING'
+    WHEN RND < 6 THEN 'FAILED'
+    WHEN RND < 14 AND TRADE_DATE >= DATEADD(day, -10, (SELECT D FROM as_of_d)) THEN 'PENDING'
+    ELSE 'SETTLED'
+  END AS STATUS
+FROM base;
+
+CREATE OR REPLACE TABLE OPS_BANK_BALANCES AS
+WITH cm AS (
+  SELECT ENTITY, CLIENT_MONEY_RESOURCE_GBP FROM CLIENT_MONEY_RECON
+  QUALIFY ROW_NUMBER() OVER (PARTITION BY ENTITY ORDER BY RECON_DATE DESC) = 1
+),
+banks AS (
+  SELECT column1 AS BANK, column2 AS SHARE FROM VALUES
+    ('Barclays', 0.35), ('HSBC', 0.25), ('Lloyds', 0.15), ('JP Morgan', 0.15), ('Citi', 0.10)
+)
+SELECT e.ENTITY, b.BANK, 'Client money (segregated)' AS ACCOUNT_TYPE, e.BASE_CCY AS CCY,
+       ROUND(cm.CLIENT_MONEY_RESOURCE_GBP * b.SHARE, 2) AS BALANCE_GBP
+FROM ENTITIES e JOIN cm USING (ENTITY) CROSS JOIN banks b
+UNION ALL
+SELECT e.ENTITY, b.BANK, 'House operating', e.BASE_CCY,
+       ROUND(cm.CLIENT_MONEY_RESOURCE_GBP * b.SHARE * (0.08 + (ABS(HASH(e.ENTITY, b.BANK)) % 50) / 1000), 2)
+FROM ENTITIES e JOIN cm USING (ENTITY) CROSS JOIN banks b;

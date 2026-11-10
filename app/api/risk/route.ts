@@ -1,0 +1,37 @@
+import { errorResponse, q } from '@/lib/ig-server';
+import { S } from '@/lib/constants';
+
+export const dynamic = 'force-dynamic';
+
+export async function GET() {
+  try {
+    const [exposure, byClass, stress, margin, hedgeCost, kpi, refresh] = await Promise.all([
+      q(`SELECT e.SYMBOL, e.ASSET_CLASS, e.OPEN_POSITIONS, e.CLIENTS, e.NET_CLIENT_GBP, e.HEDGE_GBP,
+                e.RESIDUAL_HOUSE_EXPOSURE_GBP, e.PRIME_BROKER, e.HEDGE_VENUE, v.VAR_99_1D_GBP
+         FROM ${S}.DT_EXPOSURE_BY_INSTRUMENT e LEFT JOIN ${S}.RISK_VAR_BY_INSTRUMENT v USING (INSTRUMENT_ID)
+         ORDER BY ABS(e.RESIDUAL_HOUSE_EXPOSURE_GBP) DESC`),
+      q(`SELECT e.ASSET_CLASS, SUM(e.NET_CLIENT_GBP) AS NET_CLIENT, SUM(e.HEDGE_GBP) AS HEDGE,
+                SUM(e.RESIDUAL_HOUSE_EXPOSURE_GBP) AS RESIDUAL, SUM(v.VAR_99_1D_GBP) AS VAR
+         FROM ${S}.DT_EXPOSURE_BY_INSTRUMENT e LEFT JOIN ${S}.RISK_VAR_BY_INSTRUMENT v USING (INSTRUMENT_ID)
+         GROUP BY 1 ORDER BY ABS(SUM(e.RESIDUAL_HOUSE_EXPOSURE_GBP)) DESC`),
+      q(`SELECT SCENARIO, SUM(HOUSE_PNL_GBP) AS HOUSE_PNL, SUM(CLIENT_PNL_GBP) AS CLIENT_PNL
+         FROM ${S}.RISK_STRESS_RESULTS GROUP BY 1 ORDER BY 2`),
+      q(`SELECT MARGIN_STATUS, COUNT(*) AS ACCOUNTS, SUM(MARGIN_USED_GBP) AS MARGIN
+         FROM ${S}.DT_CLIENT_MARGIN_RISK GROUP BY 1
+         ORDER BY ARRAY_POSITION(MARGIN_STATUS::VARIANT, ['Close-out','Margin call','Watch','Healthy'])`),
+      q(`SELECT PRIME_BROKER, SUM(HEDGED_NOTIONAL_GBP) AS HEDGED, SUM(HEDGE_COST_GBP) AS COST
+         FROM ${S}.HEDGE_TRADES WHERE TRADE_DATE >= DATEADD(day, -30, CURRENT_DATE()) GROUP BY 1 ORDER BY 3 DESC`),
+      q(`SELECT SUM(ABS(NET_CLIENT_GBP)) AS GROSS_CLIENT, SUM(ABS(RESIDUAL_HOUSE_EXPOSURE_GBP)) AS GROSS_RESIDUAL,
+                100 * SUM(ABS(HEDGE_GBP)) / NULLIF(SUM(ABS(NET_CLIENT_GBP)), 0) AS HEDGE_RATIO,
+                SUM(MARGIN_GBP) AS MARGIN, SUM(OPEN_POSITIONS) AS POSITIONS,
+                (SELECT SUM(VAR_99_1D_GBP) FROM ${S}.RISK_VAR_BY_INSTRUMENT) AS VAR
+         FROM ${S}.DT_EXPOSURE_BY_INSTRUMENT`),
+      q(`SELECT MAX(REFRESH_END_TIME) AS LAST_REFRESH
+         FROM TABLE(IG_GROUP_DB.INFORMATION_SCHEMA.DYNAMIC_TABLE_REFRESH_HISTORY(NAME => 'IG_GROUP_DB.STRUCTURED.DT_EXPOSURE_BY_INSTRUMENT'))
+         WHERE STATE = 'SUCCEEDED'`).catch((): Record<string, unknown>[] => [{}]),
+    ]);
+    return Response.json({ exposure, byClass, stress, margin, hedgeCost, kpi: kpi[0] ?? {}, lastRefresh: refresh[0]?.LAST_REFRESH ?? null });
+  } catch (e) {
+    return errorResponse('risk', e);
+  }
+}
